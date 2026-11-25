@@ -1,0 +1,74 @@
+name: Baixar trechos do episódio
+
+# Baixa do YouTube só os trechos listados em clipes/trechos.txt e salva em clipes/fonte/.
+# Roda quando clipes/trechos.txt muda neste branch, ou manualmente.
+on:
+  push:
+    branches: [claude/criar-3-clipes-episodio-9j41nb]
+    paths: [clipes/trechos.txt, .github/workflows/baixar-trechos.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: baixar-trechos
+  cancel-in-progress: false
+
+jobs:
+  baixar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VIDEO_URL: https://www.youtube.com/watch?v=8daOB6h4DJA
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar ferramentas
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y ffmpeg
+          pip install -U "yt-dlp[default]"
+          yt-dlp --version
+          node --version
+
+      - name: Baixar trechos
+        run: |
+          mkdir -p clipes/fonte
+          : > clipes/fonte/status.txt
+          clients=("default" "web_embedded,mweb" "tv,web_safari" "android_vr,ios")
+          grep -v '^#' clipes/trechos.txt | while read -r nome ini fim; do
+            [ -z "$nome" ] && continue
+            ok=0
+            for c in "${clients[@]}"; do
+              echo "::group::$nome ($ini-$fim) cliente=$c"
+              if yt-dlp --js-runtimes node \
+                   --extractor-args "youtube:player_client=$c" \
+                   -f "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/b[height<=1080]" \
+                   --merge-output-format mp4 \
+                   --download-sections "*$ini-$fim" \
+                   --retries 5 --fragment-retries 10 \
+                   -o "clipes/fonte/$nome.%(ext)s" "$VIDEO_URL"; then
+                ok=1
+              fi
+              echo "::endgroup::"
+              [ $ok = 1 ] && break
+              rm -f clipes/fonte/$nome.*
+              sleep 5
+            done
+            if [ $ok = 1 ]; then echo "$nome OK cliente=$c" >> clipes/fonte/status.txt
+            else echo "$nome FALHOU" >> clipes/fonte/status.txt; fi
+          done
+          cat clipes/fonte/status.txt
+          ls -la clipes/fonte
+
+      - name: Salvar no branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add clipes/fonte
+          git commit -m "Trechos do episódio baixados pelo GitHub Actions" || exit 0
+          git push
